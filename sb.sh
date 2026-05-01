@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# Sing-box 5-in-1 全能架构版 (v4.1 完美体验版)
-# 修复：Argo 隧道固定模式缺少域名、Token 无防呆校验的问题
+# Sing-box 5-in-1 全能架构版 (v4.2 细节狂魔版)
+# 修复：WARP 分流管理增加“删除指定域名”功能
 # ==========================================
 
 red() { echo -e "\033[1;91m$1\033[0m"; }
@@ -229,9 +229,9 @@ manage_protocols() {
     while true; do
         clear; purple "=== 单独协议管理 ==="
         echo "1. 修改 VLESS (端口: $PORT_VD | UUID: $UUID)"
-        echo "2. 修改 Hysteria 2 (端口: $PORT_HY | 密码: $PW_HY)"
-        echo "3. 修改 TUIC v5 (端口: $PORT_TC | 密码: $PW_TC)"
-        echo "4. 修改 SOCKS5 (端口: $PORT_S5 | 用户: $S5_U)"
+        echo "2. 修改 Hysteria 2 (端口: $PORT_HY |密码: $PW_HY)"
+        echo "3. 修改 TUIC v5 (端口: $PORT_TC |密码: $PW_TC)"
+        echo "4. 修改 SOCKS5 (端口: $PORT_S5 |用户: $S5_U)"
         echo "5. 配置 Argo 隧道 (当前模式: $ARGO_MODE)"
         echo "0. 返回上级菜单"
         reading "请选择: " choice
@@ -244,32 +244,16 @@ manage_protocols() {
                 reading "1=临时隧道(随机域名), 2=固定隧道(填Token/域名): " am
                 if [ "$am" == "2" ]; then
                     ARGO_MODE="fixed"
-                    
-                    # 强校验 1：输入并验证域名
                     while true; do
-                        reading "请输入 Cloudflare 绑定的固定域名 (如 v.yourdomain.com): " d
-                        if [ -n "$d" ]; then
-                            ARGO_DOMAIN=$d
-                            break
-                        else
-                            red "❌ 域名不能为空，请重新输入！"
-                        fi
+                        reading "请输入 Cloudflare 绑定的固定域名 (如 v.domain.com): " d
+                        if [ -n "$d" ]; then ARGO_DOMAIN=$d; break; else red "❌ 域名不能为空！"; fi
                     done
-                    
-                    # 强校验 2：输入并严格验证 Token 长度 (防乱敲回车或错误输入)
                     while true; do
                         reading "请输入 Cloudflare Token (极长字符串): " t
-                        if [ ${#t} -gt 50 ]; then
-                            ARGO_TOKEN=$t
-                            break
-                        else
-                            red "❌ 错误：Token 格式不正确(过短或为空)！Argo Token 通常极长，请检查复制是否完整！"
-                        fi
+                        if [ ${#t} -gt 50 ]; then ARGO_TOKEN=$t; break; else red "❌ Token 过短，请检查复制是否完整！"; fi
                     done
                 else
-                    ARGO_MODE="temp"
-                    ARGO_TOKEN=""
-                    ARGO_DOMAIN=""
+                    ARGO_MODE="temp"; ARGO_TOKEN=""; ARGO_DOMAIN=""
                 fi
                 ;;
             0) break ;;
@@ -293,7 +277,8 @@ manage_warp() {
         echo "--------------------------------"
         green "1. 切换 WARP 模式"
         green "2. 追加分流域名 (仅在路由分流模式下生效)"
-        green "3. 清空所有分流域名"
+        green "3. 删除指定分流域名"
+        green "4. 清空所有分流域名"
         purple "0. 返回上级菜单"
         reading "请选择: " choice
         case $choice in
@@ -309,7 +294,23 @@ manage_warp() {
                     else WARP_DOMAINS="$WARP_DOMAINS,$nd"; fi
                 fi
                 ;;
-            3) WARP_DOMAINS="" ;;
+            3)
+                if [ -z "$WARP_DOMAINS" ]; then red "❌ 当前没有可删除的域名！"; sleep 1; continue; fi
+                reading "输入要删除的域名 (如 ip.sb): " rm_d
+                if [ -n "$rm_d" ]; then
+                    # 强拆字符串数组，精准剔除
+                    IFS=',' read -ra DOMAINS <<< "$WARP_DOMAINS"
+                    local new_arr=""
+                    for d in "${DOMAINS[@]}"; do
+                        if [ "$d" != "$rm_d" ] && [ -n "$d" ]; then
+                            new_arr+="$d,"
+                        fi
+                    done
+                    WARP_DOMAINS=${new_arr%,}
+                    green "✅ 域名列表已更新！"
+                fi
+                ;;
+            4) WARP_DOMAINS="" ;;
             0) break ;;
         esac
         generate_config; systemctl restart sing-box
@@ -324,15 +325,14 @@ show_nodes() {
     yellow "正在获取网络环境..."
     out_ip=$(get_outbound_ip)
     
-    # IP 记忆功能逻辑
     if [ -z "$CUSTOM_IP" ]; then
         reading "检测出站IP为 $out_ip。请输入您的真实入站IP/域名 (如果一致直接回车): " in_ip
         [ -n "$in_ip" ] && CUSTOM_IP=$in_ip || CUSTOM_IP=$out_ip
-        save_config # 记录下来，以后不用再输了
+        save_config
     fi
 
     local ip=$CUSTOM_IP
-    [[ "$ip" =~ .*:.* ]] && ip="[${ip}]" # IPv6 格式化
+    [[ "$ip" =~ .*:.* ]] && ip="[${ip}]" 
 
     purple "\n================== 节点信息汇总 ==================\n"
     local all_links=""
@@ -358,7 +358,7 @@ show_nodes() {
         link2="vless://${UUID}@www.visa.com.sg:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2Fargo#SB-Argo"
         echo "   域名: $argo_domain"
         echo "   $link2"; all_links+="$link2\n"
-    else red "   (获取 Argo 域名失败，请检查服务日志 /var/log/messages)"; fi
+    else red "   (获取 Argo 域名失败，请检查服务日志)"; fi
     echo "--------------------------------------------------"
     
     green "3. [Hysteria 2] (端口: $PORT_HY)"
@@ -401,14 +401,14 @@ uninstall_script() {
 
 main_menu() {
     while true; do
-        clear; purple "====== Sing-box 全能版 (v4.1 完美体验版) ======"
+        clear; purple "====== Sing-box 全能版 (v4.2 细节狂魔版) ======"
         local status="未安装"
         [ -f "$SB_INFO" ] && status="已安装"
         echo -e "当前系统状态: \033[1;32m$status\033[0m"
         echo "-------------------------------------------"
         green "1. 一键部署 / 重置安装"
         green "2. 独立管理代理协议 (修改端口/密码等)"
-        green "3. 管理 WARP 智能分流 (追加/清空)"
+        green "3. 管理 WARP 智能分流 (追加/删除/清空)"
         green "4. 查看节点信息与订阅链接"
         echo "-------------------------------------------"
         red "9. 彻底卸载脚本与服务"
