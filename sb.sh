@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# Sing-box 全能引擎 (五合一节点)
+# Sing-box 5-in-1 全能架构版 (v5.0 幻影美化版)
 # 特性：极致终端 UI，Emoji 视觉引擎，状态指示器
 # ==========================================
 
@@ -17,7 +17,7 @@ reading() { echo -ne "${CYAN}➤ $1${NC}" >&2; read -r "$2"; }
 print_logo() {
     clear
     echo -e "${PURPLE}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮${NC}"
-    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 全能引擎 ${YELLOW} ( 五合一节点 ) ${NC}   ${PURPLE}┃${NC}"
+    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 5-in-1 全能引擎 ${YELLOW}(v5.0 幻影版)${NC}   ${PURPLE}┃${NC}"
     echo -e "${PURPLE}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯${NC}"
     echo ""
 }
