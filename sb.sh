@@ -21,6 +21,7 @@ SB_BIN="/usr/local/bin/sing-box"
 
 # --- 快捷指令 ---
 if [[ -f "$0" ]] && [[ "$0" != "/usr/bin/sb" ]]; then
+    rm -f /usr/bin/sb  # <--- 增加这一行，提前清理可能存在的同名失效链接或文件
     cp -f "$0" /usr/bin/sb
     chmod +x /usr/bin/sb
     green "[提示] 快捷指令 'sb' 已创建，以后在终端直接输入 sb 即可唤出本菜单！"
