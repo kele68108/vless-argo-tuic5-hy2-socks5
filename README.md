@@ -1,1 +1,1 @@
-wget -N https://github.com/kele68108/vless-argo-hy2-socks5/raw/refs/heads/main/v.sh && chmod +x v.sh && ./v.sh
+wget -N https://raw.githubusercontent.com/kele68108/vless-argo-tuic5-hy2-socks5/refs/heads/main/sb.sh && chmod +x sb.sh && ./sb.sh
