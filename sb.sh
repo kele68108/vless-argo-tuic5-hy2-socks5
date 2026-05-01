@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# Sing-box 5-in-1 全能架构版 (v4.0 涅槃版)
-# 修复：TUIC -1 错误，补充 Argo 隧道，强化交互逻辑
+# Sing-box 5-in-1 全能架构版 (v4.1 完美体验版)
+# 修复：Argo 隧道固定模式缺少域名、Token 无防呆校验的问题
 # ==========================================
 
 red() { echo -e "\033[1;91m$1\033[0m"; }
@@ -49,6 +49,7 @@ WARP_DOMAINS=$WARP_DOMAINS
 CUSTOM_IP=$CUSTOM_IP
 ARGO_MODE=$ARGO_MODE
 ARGO_TOKEN=$ARGO_TOKEN
+ARGO_DOMAIN=$ARGO_DOMAIN
 EOF
 }
 
@@ -214,7 +215,7 @@ install_all() {
     PW_TC=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 10)
     S5_U="user"; S5_P=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 8)
     
-    ARGO_MODE="temp"; ARGO_TOKEN=""
+    ARGO_MODE="temp"; ARGO_TOKEN=""; ARGO_DOMAIN=""
     WARP_MODE="1"; WARP_DOMAINS=""
 
     yellow "\n>> 正在生成配置并拉起服务..."
@@ -240,15 +241,42 @@ manage_protocols() {
             3) reading "新 TUIC 端口 (回车不变): " p; [ -n "$p" ] && PORT_TC=$p; reading "新密码 (回车不变): " pw; [ -n "$pw" ] && PW_TC=$pw ;;
             4) reading "新 Socks5 端口 (回车不变): " p; [ -n "$p" ] && PORT_S5=$p; reading "新密码 (回车不变): " pw; [ -n "$pw" ] && S5_P=$pw ;;
             5)
-                reading "1=临时隧道(随机域名), 2=固定隧道(填Token): " am
-                if [ "$am" == "2" ]; then ARGO_MODE="fixed"; reading "输入 Cloudflare Token: " ARGO_TOKEN
-                else ARGO_MODE="temp"; ARGO_TOKEN=""; fi
+                reading "1=临时隧道(随机域名), 2=固定隧道(填Token/域名): " am
+                if [ "$am" == "2" ]; then
+                    ARGO_MODE="fixed"
+                    
+                    # 强校验 1：输入并验证域名
+                    while true; do
+                        reading "请输入 Cloudflare 绑定的固定域名 (如 v.yourdomain.com): " d
+                        if [ -n "$d" ]; then
+                            ARGO_DOMAIN=$d
+                            break
+                        else
+                            red "❌ 域名不能为空，请重新输入！"
+                        fi
+                    done
+                    
+                    # 强校验 2：输入并严格验证 Token 长度 (防乱敲回车或错误输入)
+                    while true; do
+                        reading "请输入 Cloudflare Token (极长字符串): " t
+                        if [ ${#t} -gt 50 ]; then
+                            ARGO_TOKEN=$t
+                            break
+                        else
+                            red "❌ 错误：Token 格式不正确(过短或为空)！Argo Token 通常极长，请检查复制是否完整！"
+                        fi
+                    done
+                else
+                    ARGO_MODE="temp"
+                    ARGO_TOKEN=""
+                    ARGO_DOMAIN=""
+                fi
                 ;;
             0) break ;;
             *) continue ;;
         esac
         generate_config; setup_services
-        green "配置已更新并热重载！"; sleep 1
+        green "✅ 配置已更新并热重载！"; sleep 1
     done
 }
 
@@ -285,7 +313,7 @@ manage_warp() {
             0) break ;;
         esac
         generate_config; systemctl restart sing-box
-        green "WARP 规则已热重载生效！"; sleep 1
+        green "✅ WARP 规则已热重载生效！"; sleep 1
     done
 }
 
@@ -316,18 +344,21 @@ show_nodes() {
     green "2. [VLESS + Argo隧道]"
     local argo_domain=""
     if [ "$ARGO_MODE" == "temp" ]; then
-        # 尝试从日志抓取临时域名
         for i in {1..5}; do
             argo_domain=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" "$ARGO_LOG" | head -n 1 | sed 's/https:\/\///')
             [ -n "$argo_domain" ] && break; sleep 1
         done
-    else argo_domain="(需自行绑定)"; fi
+        [ -n "$argo_domain" ] && echo "   类型: 临时隧道 (已成功抓取)"
+    elif [ "$ARGO_MODE" == "fixed" ]; then
+        argo_domain="$ARGO_DOMAIN"
+        echo "   类型: 固定隧道"
+    fi
     
     if [ -n "$argo_domain" ]; then
         link2="vless://${UUID}@www.visa.com.sg:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2Fargo#SB-Argo"
-        echo "   临时域名: $argo_domain"
+        echo "   域名: $argo_domain"
         echo "   $link2"; all_links+="$link2\n"
-    else red "   (获取 Argo 域名失败，请检查服务状态)"; fi
+    else red "   (获取 Argo 域名失败，请检查服务日志 /var/log/messages)"; fi
     echo "--------------------------------------------------"
     
     green "3. [Hysteria 2] (端口: $PORT_HY)"
@@ -370,7 +401,7 @@ uninstall_script() {
 
 main_menu() {
     while true; do
-        clear; purple "====== Sing-box 全能版 (v4.0 涅槃版) ======"
+        clear; purple "====== Sing-box 全能版 (v4.1 完美体验版) ======"
         local status="未安装"
         [ -f "$SB_INFO" ] && status="已安装"
         echo -e "当前系统状态: \033[1;32m$status\033[0m"
