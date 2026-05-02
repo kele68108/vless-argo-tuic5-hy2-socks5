@@ -17,7 +17,7 @@ reading() { echo -ne "${CYAN}➤ $1${NC}" >&2; read -r "$2"; }
 print_logo() {
     clear
     echo -e "${PURPLE}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮${NC}"
-    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 5-in-1 全能引擎 ${YELLOW}(一键极速部署)${NC}   ${PURPLE}┃${NC}"
+    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 5-in-1全能引擎 ${YELLOW}(一键极速部署)${NC}   ${PURPLE}┃${NC}"
     echo -e "${PURPLE}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯${NC}"
     echo ""
 }
