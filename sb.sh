@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# Sing-box 5-in-1 全能架构版 (v5.0 幻影美化版)
-# 特性：极致终端 UI，Emoji 视觉引擎，状态指示器
+# Sing-box 5-in-1 全能架构版 (v5.0 幻影进化版)
+# 特性：极致终端 UI，DNS 路由引擎，ACME 真实证书，I/O 强校验
 # ==========================================
 
 # --- 视觉与色彩引擎 ---
@@ -42,7 +42,12 @@ if [[ "$0" != "/usr/bin/sb" ]]; then
 fi
 
 # --- 核心数据读写 ---
-load_config() { [ -f "$SB_INFO" ] && source "$SB_INFO"; }
+load_config() { 
+    [ -f "$SB_INFO" ] && source "$SB_INFO"
+    # 兼容老版本默认值
+    [ -z "$VD_MODE" ] && VD_MODE="2"
+    [ -z "$VD_DOMAIN" ] && VD_DOMAIN=""
+}
 save_config() {
     cat > "$SB_INFO" << EOF
 UUID=$UUID
@@ -60,6 +65,8 @@ CUSTOM_IP=$CUSTOM_IP
 ARGO_MODE=$ARGO_MODE
 ARGO_TOKEN=$ARGO_TOKEN
 ARGO_DOMAIN=$ARGO_DOMAIN
+VD_MODE=$VD_MODE
+VD_DOMAIN=$VD_DOMAIN
 EOF
 }
 
@@ -92,11 +99,79 @@ EOF
 install_deps() {
     msg_info "正在检查并安装基础依赖环境..."
     apt-get update -y >/dev/null 2>&1 || yum makecache -y >/dev/null 2>&1
-    local pkgs=("curl" "wget" "jq" "openssl" "gpg" "lsb-release" "lsof" "net-tools")
+    local pkgs=("curl" "wget" "jq" "openssl" "gpg" "lsb-release" "lsof" "net-tools" "socat")
     for pkg in "${pkgs[@]}"; do
         if ! command -v "$pkg" >/dev/null 2>&1; then apt-get install -y "$pkg" >/dev/null 2>&1 || yum install -y "$pkg" >/dev/null 2>&1; fi
     done
     optimize_network
+}
+
+# --- 健壮性下载引擎 ---
+safe_download() {
+    local url=$1
+    local dest=$2
+    msg_info "正在获取: $url"
+    local http_code=$(curl -sL -w "%{http_code}" -o "$dest" "$url")
+    if [ "$http_code" != "200" ]; then
+        msg_error "文件拉取失败！(HTTP 状态码: $http_code)"
+        rm -f "$dest"
+        return 1
+    fi
+    if [ ! -s "$dest" ]; then
+        msg_error "下载失败！文件为空。"
+        rm -f "$dest"
+        return 1
+    fi
+    return 0
+}
+
+# --- ACME 证书申请模块 ---
+apply_cert() {
+    local domain=$1
+    if [ ! -d ~/.acme.sh ]; then msg_warn "正在安装 acme.sh 证书工具..."; curl https://get.acme.sh | sh >/dev/null 2>&1; fi
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
+    
+    echo ""; msg_info "================ 证书申请 ================"
+    msg_info "开始为 $domain 申请 TLS 证书"
+    msg_info ">>> 尝试第一阶段：Standalone 模式 (自动验证)"
+    
+    local standalone_success=false
+    if check_port_usage 80; then
+        ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k ec-256 --force
+        if [ $? -eq 0 ]; then standalone_success=true; fi
+    else msg_warn "检测到 80 端口被占用，跳过 Standalone 模式。"; fi
+    
+    if [ "$standalone_success" = false ]; then
+        echo ""; msg_error "Standalone 模式申请失败 (可能是 NAT 环境导致 80 端口不可达)。"
+        msg_info ">>> 触发第二阶段：Cloudflare API (DNS-01) 模式"
+        reading "是否启用 Cloudflare API 继续申请证书？(y/n，默认 y): " use_dns
+        [ -z "$use_dns" ] && use_dns="y"
+        
+        if [[ "$use_dns" != "y" ]]; then msg_error "已取消证书申请。"; return 1; fi
+        
+        echo ""; msg_warn "请登录 Cloudflare 获取以下凭据："
+        reading "1. 请输入 Cloudflare API Token: " cf_token
+        while [ -z "$cf_token" ]; do reading "Token 不能为空，请重新输入: " cf_token; done
+        
+        reading "2. 请输入域名的 区域 ID (Zone ID): " cf_zone_id
+        while [ -z "$cf_zone_id" ]; do reading "区域 ID 不能为空，请重新输入: " cf_zone_id; done
+        
+        export CF_Token="$cf_token"
+        export CF_Zone_ID="$cf_zone_id"
+        
+        msg_info "正在通过 Cloudflare DNS API 申请证书，这可能需要 1-2 分钟..."
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$domain" -k ec-256 --force
+        
+        if [ $? -ne 0 ]; then
+            echo ""; msg_error "证书申请彻底失败！请检查 API 权限及 区域 ID 是否正确。"; return 1
+        fi
+    fi
+    
+    msg_info "正在安装证书到 Sing-box 环境..."
+    mkdir -p "${SB_DIR}"
+    ~/.acme.sh/acme.sh --installcert -d "$domain" --fullchain-file "${SB_DIR}/server.crt" --key-file "${SB_DIR}/server.key" --ecc >/dev/null 2>&1
+    msg_success "真实域名证书申请并部署成功！"
+    return 0
 }
 
 # --- 核心组件部署 ---
@@ -105,9 +180,15 @@ install_singbox() {
         msg_info "正在下载部署 Sing-box 核心大脑..."
         ARCH=$(uname -m); case "${ARCH}" in x86_64) S_ARCH="amd64" ;; aarch64|arm64) S_ARCH="arm64" ;; *) msg_error "不支持的架构"; exit 1 ;; esac
         TAG=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r .tag_name)
-        curl -sLo sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${S_ARCH}.tar.gz"
-        tar -xzf sb.tar.gz; mv sing-box-*/sing-box "$SB_BIN"; rm -rf sb.tar.gz sing-box-*
-        chmod +x "$SB_BIN"
+        
+        if safe_download "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${S_ARCH}.tar.gz" "sb.tar.gz"; then
+            tar -xzf sb.tar.gz || { msg_error "解压失败"; rm -f sb.tar.gz; exit 1; }
+            mv sing-box-*/sing-box "$SB_BIN"; rm -rf sb.tar.gz sing-box-*
+            chmod +x "$SB_BIN"
+        else
+            msg_error "Sing-box 核心获取失败，请检查网络！"
+            exit 1
+        fi
     fi
 }
 
@@ -115,8 +196,11 @@ install_argo() {
     if [ ! -f "$ARGO_BIN" ]; then
         msg_info "正在下载部署 Cloudflared (Argo) 隧道组件..."
         ARCH=$(uname -m); case "${ARCH}" in x86_64) A_ARCH="amd64" ;; aarch64|arm64) A_ARCH="arm64" ;; esac
-        curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${A_ARCH}" -o "$ARGO_BIN"
-        chmod +x "$ARGO_BIN"
+        if safe_download "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${A_ARCH}" "$ARGO_BIN"; then
+            chmod +x "$ARGO_BIN"
+        else
+            msg_error "Argo 核心获取失败，跳过安装！"
+        fi
     fi
 }
 
@@ -124,7 +208,7 @@ install_warp() {
     if ! command -v warp-cli >/dev/null 2>&1; then
         msg_info "正在安装 Cloudflare WARP 官方客户端..."
         curl -fsSl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-        DPKG_ARCH=$(dpkg --print-architecture)
+        DPKG_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
         echo "deb [arch=${DPKG_ARCH} signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
         apt-get update -y >/dev/null 2>&1 && apt-get install -y cloudflare-warp >/dev/null 2>&1
     fi
@@ -137,10 +221,23 @@ install_warp() {
 # --- 配置引擎 ---
 generate_config() {
     mkdir -p "$SB_DIR"
-    if [ ! -f "${SB_DIR}/server.crt" ]; then
+    
+    # 根据 VD_MODE 决定是否生成自签证书
+    if [[ "$VD_MODE" != "3" ]] && [[ ! -f "${SB_DIR}/server.crt" ]]; then
         openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "${SB_DIR}/server.key" -out "${SB_DIR}/server.crt" -subj "/CN=bing.com" -days 3650 >/dev/null 2>&1
     fi
 
+    # 动态构建 VLESS Inbound
+    local vless_inbound
+    if [ "$VD_MODE" == "1" ]; then
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "transport": { "type": "ws", "path": "/ws" } }'
+    elif [ "$VD_MODE" == "3" ] && [ -n "$VD_DOMAIN" ]; then
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "server_name": "'$VD_DOMAIN'", "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, "transport": { "type": "ws", "path": "/ws" } }'
+    else
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, "transport": { "type": "ws", "path": "/ws" } }'
+    fi
+
+    # 构建 WARP 路由规则
     local rules_json='{"outbound": "direct-out"}'
     if [ "$WARP_MODE" == "2" ]; then rules_json='{"outbound": "warp-out"}'
     elif [ "$WARP_MODE" == "3" ] && [ -n "$WARP_DOMAINS" ]; then
@@ -155,8 +252,19 @@ generate_config() {
     cat > "$SB_CONF" << EOF
 {
   "log": { "level": "warn", "timestamp": true },
+  "dns": {
+    "servers": [
+      { "tag": "dns-doh", "address": "https://1.1.1.1/dns-query", "detour": "direct-out" },
+      { "tag": "dns-local", "address": "local", "detour": "direct-out" }
+    ],
+    "rules": [
+      { "outbound": "any", "server": "dns-local" }
+    ],
+    "final": "dns-doh",
+    "strategy": "ipv4_only"
+  },
   "inbounds": [
-    { "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": $PORT_VD, "users": [ { "uuid": "$UUID", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "transport": { "type": "ws", "path": "/ws" } },
+    $vless_inbound,
     { "type": "vless", "tag": "in-argo", "listen": "127.0.0.1", "listen_port": 10086, "users": [ { "uuid": "$UUID", "flow": "" } ], "transport": { "type": "ws", "path": "/argo" } },
     { "type": "hysteria2", "tag": "in-hy2", "listen": "::", "listen_port": $PORT_HY, "users": [ { "password": "$PW_HY" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" } },
     { "type": "tuic", "tag": "in-tuic", "listen": "::", "listen_port": $PORT_TC, "users": [ { "uuid": "$UUID", "password": "$PW_TC" } ], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "congestion_control": "bbr" },
@@ -228,6 +336,7 @@ install_all() {
     
     ARGO_MODE="temp"; ARGO_TOKEN=""; ARGO_DOMAIN=""
     WARP_MODE="1"; WARP_DOMAINS=""
+    VD_MODE="2"; VD_DOMAIN=""
 
     echo ""
     msg_info "正在生成底层架构配置并拉起系统服务..."
@@ -252,7 +361,30 @@ manage_protocols() {
         echo -e "${CYAN}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯${NC}"
         reading "请选择操作 [0-5]: " choice
         case $choice in
-            1) reading "➤ 新 VLESS 端口 (回车不变): " p; [ -n "$p" ] && PORT_VD=$p; reading "➤ 新 UUID (回车不变): " u; [ -n "$u" ] && UUID=$u ;;
+            1) 
+                reading "➤ 新 VLESS 端口 (回车不变): " p; [ -n "$p" ] && PORT_VD=$p
+                reading "➤ 新 UUID (回车不变): " u; [ -n "$u" ] && UUID=$u
+                echo -e "\n  ${YELLOW}请选择 VLESS 模式：${NC}"
+                echo -e "  [1] 关闭 TLS (纯普通直连)"
+                echo -e "  [2] 开启 TLS (自签伪装证书)"
+                echo -e "  [3] 开启 TLS (申请真实域名证书)"
+                reading "➤ 模式选择 [1-3]: " vm
+                if [ "$vm" == "3" ]; then
+                    reading "➤ 请输入已解析到此VPS的真实域名: " vd
+                    if [ -n "$vd" ]; then
+                        apply_cert "$vd"
+                        if [ $? -eq 0 ]; then
+                            VD_MODE="3"; VD_DOMAIN="$vd"
+                        else
+                            msg_error "证书获取失败，放弃修改模式。"
+                        fi
+                    else
+                        msg_warn "域名为空，操作取消。"
+                    fi
+                elif [[ "$vm" == "1" || "$vm" == "2" ]]; then
+                    VD_MODE=$vm; VD_DOMAIN=""
+                fi
+                ;;
             2) reading "➤ 新 Hy2 端口 (回车不变): " p; [ -n "$p" ] && PORT_HY=$p; reading "➤ 新密码 (回车不变): " pw; [ -n "$pw" ] && PW_HY=$pw ;;
             3) reading "➤ 新 TUIC 端口 (回车不变): " p; [ -n "$p" ] && PORT_TC=$p; reading "➤ 新密码 (回车不变): " pw; [ -n "$pw" ] && PW_TC=$pw ;;
             4) reading "➤ 新 Socks5 端口 (回车不变): " p; [ -n "$p" ] && PORT_S5=$p; reading "➤ 新密码 (回车不变): " pw; [ -n "$pw" ] && S5_P=$pw ;;
@@ -355,9 +487,17 @@ show_nodes() {
     echo -e "\n${CYAN}╭━━━━━━━━━━━━ 🔗 节点信息汇总 ━━━━━━━━━━━━╮${NC}"
     local all_links=""
     
-    # 1. VLESS
-    echo -e "${CYAN}┃${NC} ⚡ ${GREEN}[1. VLESS + WS + TLS]${NC} (伪装直连)"
-    link1="vless://${UUID}@${ip}:${PORT_VD}?encryption=none&security=tls&sni=bing.com&alpn=http%2F1.1&type=ws&host=bing.com&path=%2Fws&allowInsecure=1#SB-VLESS"
+    # 1. VLESS (根据不同模式生成订阅)
+    if [ "$VD_MODE" == "1" ]; then
+        echo -e "${CYAN}┃${NC} ⚡ ${GREEN}[1. VLESS + WS]${NC} (关闭 TLS 纯直连)"
+        link1="vless://${UUID}@${ip}:${PORT_VD}?encryption=none&security=none&type=ws&path=%2Fws#SB-VLESS-NoTLS"
+    elif [ "$VD_MODE" == "3" ] && [ -n "$VD_DOMAIN" ]; then
+        echo -e "${CYAN}┃${NC} ⚡ ${GREEN}[1. VLESS + WS + TLS]${NC} (真实证书: ${VD_DOMAIN})"
+        link1="vless://${UUID}@${VD_DOMAIN}:${PORT_VD}?encryption=none&security=tls&sni=${VD_DOMAIN}&type=ws&host=${VD_DOMAIN}&path=%2Fws#SB-VLESS-TLS"
+    else
+        echo -e "${CYAN}┃${NC} ⚡ ${GREEN}[1. VLESS + WS + TLS]${NC} (自签伪装证书)"
+        link1="vless://${UUID}@${ip}:${PORT_VD}?encryption=none&security=tls&sni=bing.com&alpn=http%2F1.1&type=ws&host=bing.com&path=%2Fws&allowInsecure=1#SB-VLESS-FakeTLS"
+    fi
     echo -e "${CYAN}┃${NC}    ${link1}"
     all_links+="$link1\n"
     
@@ -442,7 +582,7 @@ main_menu() {
         echo -e "   系统状态: $status"
         echo -e "   ─────────────────────────────────────────"
         echo -e "   ${GREEN}[1]${NC} 🚀 一键部署 / 重置安装引擎"
-        echo -e "   ${GREEN}[2]${NC} ⚙️  单独协议配置管理 (端口/密码)"
+        echo -e "   ${GREEN}[2]${NC} ⚙️  单独协议配置管理 (端口/密码/证书)"
         echo -e "   ${GREEN}[3]${NC} 🌐 调教 WARP 智能分流规则"
         echo -e "   ${GREEN}[4]${NC} 🔗 查看提取节点订阅链接"
         echo -e "   ─────────────────────────────────────────"
