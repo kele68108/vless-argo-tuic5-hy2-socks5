@@ -17,7 +17,7 @@ reading() { echo -ne "${CYAN}➤ $1${NC}" >&2; read -r "$2"; }
 print_logo() {
     clear
     echo -e "${CYAN}┌───────────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC}           Sing-box 5-in-1                 ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}           Sing-box 5-in-1 工业级版            ${CYAN}│${NC}"
     echo -e "${CYAN}└───────────────────────────────────────────────┘${NC}"
     echo ""
 }
