@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# Sing-box 5-in-1 全能架构版 (v5.0 幻影进化版)
-# 特性：极致终端 UI，DNS 路由引擎，ACME 真实证书，I/O 强校验
+# Sing-box 5-in-1 全能架构版 (v5.1 幻影终极版)
+# 特性：极致终端 UI，新版 DNS 路由引擎，ACME 真实证书，I/O 强校验
 # ==========================================
 
 # --- 视觉与色彩引擎 ---
@@ -17,7 +17,7 @@ reading() { echo -ne "${CYAN}➤ $1${NC}" >&2; read -r "$2"; }
 print_logo() {
     clear
     echo -e "${PURPLE}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮${NC}"
-    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 5-in-1 全能引擎 ${YELLOW}(v5.0 幻影版)${NC}   ${PURPLE}┃${NC}"
+    echo -e "${PURPLE}┃${NC}   🚀 ${CYAN}Sing-box 5-in-1 全能引擎 ${YELLOW}(v5.1 终极版)${NC}   ${PURPLE}┃${NC}"
     echo -e "${PURPLE}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯${NC}"
     echo ""
 }
@@ -249,18 +249,15 @@ generate_config() {
         fi
     fi
 
+    # 核心：1.12.0 新版 DNS 与 协议矩阵
     cat > "$SB_CONF" << EOF
 {
   "log": { "level": "warn", "timestamp": true },
   "dns": {
     "servers": [
-      { "tag": "dns-doh", "address": "https://1.1.1.1/dns-query", "detour": "direct-out" },
-      { "tag": "dns-local", "address": "local", "detour": "direct-out" }
+      { "tag": "dns-remote", "type": "udp", "server": "1.1.1.1", "detour": "direct-out" }
     ],
-    "rules": [
-      { "outbound": "any", "server": "dns-local" }
-    ],
-    "final": "dns-doh",
+    "final": "dns-remote",
     "strategy": "ipv4_only"
   },
   "inbounds": [
