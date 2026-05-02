@@ -2,7 +2,7 @@
 
 # ==========================================
 # Sing-box 5-in-1 全能引擎 (一键极速部署)
-# 特性：极致终端 UI，新版 DNS 路由引擎，ACME 真实证书，WARP 异步修复
+# 特性：极致终端 UI，新版 DNS 路由引擎，ACME 真实证书，I/O 强校验
 # ==========================================
 
 # --- 视觉与色彩引擎 ---
@@ -44,6 +44,7 @@ fi
 # --- 核心数据读写 ---
 load_config() { 
     [ -f "$SB_INFO" ] && source "$SB_INFO"
+    # 兼容老版本默认值
     [ -z "$VD_MODE" ] && VD_MODE="2"
     [ -z "$VD_DOMAIN" ] && VD_DOMAIN=""
 }
@@ -105,6 +106,7 @@ install_deps() {
     optimize_network
 }
 
+# --- 健壮性下载引擎 ---
 safe_download() {
     local url=$1
     local dest=$2
@@ -123,6 +125,7 @@ safe_download() {
     return 0
 }
 
+# --- ACME 证书申请模块 ---
 apply_cert() {
     local domain=$1
     if [ ! -d ~/.acme.sh ]; then msg_warn "正在安装 acme.sh 证书工具..."; curl https://get.acme.sh | sh >/dev/null 2>&1; fi
@@ -171,6 +174,7 @@ apply_cert() {
     return 0
 }
 
+# --- 核心组件部署 ---
 install_singbox() {
     if [ ! -f "$SB_BIN" ]; then
         msg_info "正在下载部署 Sing-box 核心大脑..."
@@ -207,38 +211,33 @@ install_warp() {
         DPKG_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
         echo "deb [arch=${DPKG_ARCH} signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
         apt-get update -y >/dev/null 2>&1 && apt-get install -y cloudflare-warp >/dev/null 2>&1
-        
-        msg_info "等待 WARP 守护进程初始化..."
-        sleep 3
     fi
-    
-    # 核心修复：引入严格的 sleep 时序，解决异步注册导致的抢跑崩溃问题
     warp-cli --accept-tos registration new >/dev/null 2>&1
-    sleep 3
     warp-cli --accept-tos mode proxy >/dev/null 2>&1
     warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
     warp-cli --accept-tos connect >/dev/null 2>&1
-    sleep 2
 }
 
+# --- 配置引擎 ---
 generate_config() {
     mkdir -p "$SB_DIR"
     
+    # 根据 VD_MODE 决定是否生成自签证书
     if [[ "$VD_MODE" != "3" ]] && [[ ! -f "${SB_DIR}/server.crt" ]]; then
         openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "${SB_DIR}/server.key" -out "${SB_DIR}/server.crt" -subj "/CN=bing.com" -days 3650 >/dev/null 2>&1
     fi
 
-    # 核心修复：开启 Sniff 嗅探，避免 IP 请求逃逸路由
-    local sniff_conf='"sniff": { "enabled": true, "override_destination": true }'
+    # 动态构建 VLESS Inbound
     local vless_inbound
     if [ "$VD_MODE" == "1" ]; then
-        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], '$sniff_conf', "transport": { "type": "ws", "path": "/ws" } }'
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "transport": { "type": "ws", "path": "/ws" } }'
     elif [ "$VD_MODE" == "3" ] && [ -n "$VD_DOMAIN" ]; then
-        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "server_name": "'$VD_DOMAIN'", "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, '$sniff_conf', "transport": { "type": "ws", "path": "/ws" } }'
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "server_name": "'$VD_DOMAIN'", "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, "transport": { "type": "ws", "path": "/ws" } }'
     else
-        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, '$sniff_conf', "transport": { "type": "ws", "path": "/ws" } }'
+        vless_inbound='{ "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": '$PORT_VD', "users": [ { "uuid": "'$UUID'", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "'${SB_DIR}'/server.crt", "key_path": "'${SB_DIR}'/server.key" }, "transport": { "type": "ws", "path": "/ws" } }'
     fi
 
+    # 构建 WARP 路由规则
     local rules_json='{"outbound": "direct-out"}'
     if [ "$WARP_MODE" == "2" ]; then rules_json='{"outbound": "warp-out"}'
     elif [ "$WARP_MODE" == "3" ] && [ -n "$WARP_DOMAINS" ]; then
@@ -250,6 +249,7 @@ generate_config() {
         fi
     fi
 
+    # 核心：修复无意义 direct 路由冲突的精简 DNS 引擎
     cat > "$SB_CONF" << EOF
 {
   "log": { "level": "warn", "timestamp": true },
@@ -262,10 +262,10 @@ generate_config() {
   },
   "inbounds": [
     $vless_inbound,
-    { "type": "vless", "tag": "in-argo", "listen": "127.0.0.1", "listen_port": 10086, "users": [ { "uuid": "$UUID", "flow": "" } ], $sniff_conf, "transport": { "type": "ws", "path": "/argo" } },
-    { "type": "hysteria2", "tag": "in-hy2", "listen": "::", "listen_port": $PORT_HY, "users": [ { "password": "$PW_HY" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, $sniff_conf },
-    { "type": "tuic", "tag": "in-tuic", "listen": "::", "listen_port": $PORT_TC, "users": [ { "uuid": "$UUID", "password": "$PW_TC" } ], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "congestion_control": "bbr", $sniff_conf },
-    { "type": "socks", "tag": "in-socks", "listen": "::", "listen_port": $PORT_S5, "users": [ { "username": "$S5_U", "password": "$S5_P" } ], $sniff_conf }
+    { "type": "vless", "tag": "in-argo", "listen": "127.0.0.1", "listen_port": 10086, "users": [ { "uuid": "$UUID", "flow": "" } ], "transport": { "type": "ws", "path": "/argo" } },
+    { "type": "hysteria2", "tag": "in-hy2", "listen": "::", "listen_port": $PORT_HY, "users": [ { "password": "$PW_HY" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" } },
+    { "type": "tuic", "tag": "in-tuic", "listen": "::", "listen_port": $PORT_TC, "users": [ { "uuid": "$UUID", "password": "$PW_TC" } ], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "congestion_control": "bbr" },
+    { "type": "socks", "tag": "in-socks", "listen": "::", "listen_port": $PORT_S5, "users": [ { "username": "$S5_U", "password": "$S5_P" } ] }
   ],
   "outbounds": [
     { "type": "direct", "tag": "direct-out" },
@@ -310,6 +310,7 @@ EOF
     systemctl restart sing-box sb-argo
 }
 
+# --- 菜单功能实现 ---
 install_all() {
     print_logo
     echo -e "${YELLOW}▶ 开始极速一键部署流程...${NC}\n"
@@ -483,6 +484,7 @@ show_nodes() {
     echo -e "\n${CYAN}╭━━━━━━━━━━━━ 🔗 节点信息汇总 ━━━━━━━━━━━━╮${NC}"
     local all_links=""
     
+    # 1. VLESS (根据不同模式生成订阅)
     if [ "$VD_MODE" == "1" ]; then
         echo -e "${CYAN}┃${NC} ⚡ ${GREEN}[1. VLESS + WS]${NC} (关闭 TLS 纯直连)"
         link1="vless://${UUID}@${ip}:${PORT_VD}?encryption=none&security=none&type=ws&path=%2Fws#SB-VLESS-NoTLS"
@@ -496,6 +498,7 @@ show_nodes() {
     echo -e "${CYAN}┃${NC}    ${link1}"
     all_links+="$link1\n"
     
+    # 2. Argo
     local argo_domain=""
     if [ "$ARGO_MODE" == "temp" ]; then
         for i in {1..5}; do
@@ -517,18 +520,21 @@ show_nodes() {
         echo -e "${CYAN}┃${NC}    ${RED}(未能成功获取隧道域名，请检查日志)${NC}"
     fi
 
+    # 3. Hysteria 2
     echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
     echo -e "${CYAN}┃${NC} 🚀 ${GREEN}[3. Hysteria 2]${NC} (暴力加速)"
     link3="hysteria2://${PW_HY}@${ip}:${PORT_HY}?insecure=1&sni=bing.com#SB-Hy2"
     echo -e "${CYAN}┃${NC}    ${link3}"
     all_links+="$link3\n"
     
+    # 4. TUIC v5
     echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
     echo -e "${CYAN}┃${NC} 🏎️  ${GREEN}[4. TUIC v5]${NC} (QUIC 协议)"
     link4="tuic://${UUID}:${PW_TC}@${ip}:${PORT_TC}?sni=bing.com&alpn=h3&congestion_control=bbr&allow_insecure=1#SB-TUIC"
     echo -e "${CYAN}┃${NC}    ${link4}"
     all_links+="$link4\n"
     
+    # 5. SOCKS5
     echo -e "${CYAN}┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫${NC}"
     echo -e "${CYAN}┃${NC} 🛡️  ${GREEN}[5. SOCKS5]${NC} (基础代理)"
     b64_cred=$(echo -n "${S5_U}:${S5_P}" | base64 | tr -d '\n')
