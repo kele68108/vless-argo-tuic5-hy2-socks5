@@ -17,7 +17,7 @@ reading() { echo -ne "${CYAN}➤ $1${NC}" >&2; read -r "$2"; }
 print_logo() {
     clear
     echo -e "${CYAN}┌───────────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC}           Sing-box 5-in-1 工业级版            ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}           Sing-box 5-in-1                 ${CYAN}│${NC}"
     echo -e "${CYAN}└───────────────────────────────────────────────┘${NC}"
     echo ""
 }
@@ -157,7 +157,6 @@ install_wgcf_warp() {
         curl -sL "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_$(uname -s | tr '[:upper:]' '[:lower:]')_${S_ARCH}" -o "$WGCF_BIN"
         chmod +x "$WGCF_BIN"
         
-        # 注册账号并生成配置
         yes | "$WGCF_BIN" register >/dev/null 2>&1
         "$WGCF_BIN" generate >/dev/null 2>&1
         
@@ -193,7 +192,6 @@ generate_config() {
         fi
     fi
 
-    # 构建 WARP (WireGuard) 出站块
     local warp_outbound_json='{ "type": "block", "tag": "warp-out" }'
     if [ "$WG_PRIV" != "none" ]; then
         warp_outbound_json="{
@@ -210,8 +208,8 @@ generate_config() {
 {
   "log": { "level": "warn", "timestamp": true },
   "inbounds": [
-    { "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": $PORT_VD, "tcp_fast_open": true, "users": [ { "uuid": "$UUID", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "transport": { "type": "ws", "path": "/ws", "idle_timeout": "300s" } },
-    { "type": "vless", "tag": "in-argo", "listen": "127.0.0.1", "listen_port": 10086, "tcp_fast_open": true, "users": [ { "uuid": "$UUID", "flow": "" } ], "transport": { "type": "ws", "path": "/argo", "idle_timeout": "300s" } },
+    { "type": "vless", "tag": "in-vless", "listen": "::", "listen_port": $PORT_VD, "tcp_fast_open": true, "users": [ { "uuid": "$UUID", "flow": "" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "transport": { "type": "ws", "path": "/ws" } },
+    { "type": "vless", "tag": "in-argo", "listen": "127.0.0.1", "listen_port": 10086, "tcp_fast_open": true, "users": [ { "uuid": "$UUID", "flow": "" } ], "transport": { "type": "ws", "path": "/argo" } },
     { "type": "hysteria2", "tag": "in-hy2", "listen": "::", "listen_port": $PORT_HY, "users": [ { "password": "$PW_HY" } ], "tls": { "enabled": true, "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" } },
     { "type": "tuic", "tag": "in-tuic", "listen": "::", "listen_port": $PORT_TC, "users": [ { "uuid": "$UUID", "password": "$PW_TC" } ], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${SB_DIR}/server.crt", "key_path": "${SB_DIR}/server.key" }, "congestion_control": "bbr", "udp_relay_mode": "quic" },
     { "type": "socks", "tag": "in-socks", "listen": "::", "listen_port": $PORT_S5, "users": [ { "username": "$S5_U", "password": "$S5_P" } ] }
@@ -246,7 +244,6 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-    # 锁定 Argo 的协议为 HTTP2 并强制 IPv4 寻址以保障多网关环境稳定性
     local ARGO_CMD="$ARGO_BIN tunnel --url http://127.0.0.1:10086 --protocol http2 --edge-ip-version 4 --retries 5 --no-autoupdate"
     [ "$ARGO_MODE" == "fixed" ] && ARGO_CMD="$ARGO_BIN tunnel run --protocol http2 --edge-ip-version 4 --token ${ARGO_TOKEN}"
     
@@ -437,8 +434,10 @@ show_nodes() {
     echo -e "${CYAN}│${NC}     ${link5}"; all_links+="$link5\n"
     echo -e "${CYAN}└─────────────────────────────────────────────────┘${NC}"
 
-    echo -e "\n${YELLOW}Base64 订阅链接:${NC}"
-    echo -e "$all_links" | sed '/^$/d' | base64 | tr -d '\n'
+    echo -e "\n${YELLOW}Base64 订阅链接 (已自动备份至 /root/sub.txt):${NC}"
+    local final_b64=$(echo -e "$all_links" | sed '/^$/d' | base64 | tr -d '\n')
+    echo -e "$final_b64"
+    echo -e "$final_b64" > /root/sub.txt
     
     echo -e "\n"
     reading "按回车键返回..." dummy
@@ -446,16 +445,16 @@ show_nodes() {
 
 uninstall_script() {
     print_logo
-    reading "➤ 确定要彻底卸载系统吗? (y/n): " c
+    reading "➤ 确定要彻底卸载系统并删除程序配置吗? (y/n): " c
     [[ "$c" != "y" ]] && return
 
-    msg_info "正在清理底层服务与数据..."
+    msg_info "正在清理底层服务与程序数据 (保留 sub.txt)..."
     systemctl stop sing-box sb-argo >/dev/null 2>&1
     systemctl disable sing-box sb-argo >/dev/null 2>&1
     rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/sb-argo.service
     rm -rf "$SB_DIR" "$SB_BIN" "$ARGO_BIN" "$WGCF_BIN" "/usr/bin/sb"
     systemctl daemon-reload
-    msg_success "系统已完全卸载。"; exit 0
+    msg_success "程序和配置已完全卸载，订阅链接留存至 /root/sub.txt。"; exit 0
 }
 
 main_menu() {
